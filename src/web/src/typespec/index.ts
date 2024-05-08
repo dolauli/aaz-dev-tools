@@ -15,32 +15,33 @@ const libs = [
     "@azure-tools/typespec-azure-core",
     "@azure-tools/typespec-client-generator-core",
     "@azure-tools/typespec-azure-resource-manager",
+    "@azure-tools/typespec-aaz",
   ]
 
   const outputDir = "tsp-output";
 
-export async function get_typespec_rp_resources(resourceProviderUrl: string) {
+export async function getTypespecRPResources(resourceProviderUrl: string) {
     const host = await createBrowserHost(libs, {useShim: true})
     const res = await axios.get(resourceProviderUrl);
     const entryFiles = res.data.entryFiles;
     for (const entryFile of entryFiles) {
+        // cache entry files
         await host.stat(entryFile);
-        // const content = await axios.get(`/Swagger/Specs/Files/${entryFile}`);
-        // host.writeFile(entryFile, content.data)
         await host.compiler.compile(host, entryFile, {
             outputDir: outputDir,
-            emit: ["@azure-tools/typespec-autorest"]
+            emit: ["@azure-tools/typespec-aaz"],
+            options: {
+              "@azure-tools/typespec-aaz": {
+                "operation": "list-resources",
+              },
+            },
+            trace: ['@azure-tools/typespec-aaz',],
         });
-        await findOutputFiles(host);
-        // let sourceFile = host.compiler.createSourceFile(entryFile, content.data, host.compiler.getSourceFileKindFromExt(entryFile));
-        // let resources = host.compiler.getTypes(sourceFile);
-        // for (let resource of resources) {
-        //     console.log(resource);
-        // }
+
+        const files = await findOutputFiles(host);
+        const file = await host.readFile(outputDir + files[0]);
+        return JSON.parse(file.text);
     }
-    // entryFiles.forEach(async (entryFile: string) => {
-    //     content = await.axios
-    // })
 }
 
 async function findOutputFiles(host: BrowserHost): Promise<string[]> {
