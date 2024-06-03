@@ -5,12 +5,13 @@ import shutil
 from datetime import datetime
 
 from command.model.editor import CMDEditorWorkspace, CMDCommandTreeNode, CMDCommandTreeLeaf
-from swagger.controller.command_generator import CommandGenerator
+from swagger.controller.command_generator import SwaggerCommandGenerator, TypespecCommandGenerator
 from swagger.controller.specs_manager import SwaggerSpecsManager
 from swagger.utils.exceptions import InvalidSwaggerValueError
 from utils import exceptions
 from utils.config import Config
 from utils.plane import PlaneEnum
+from utils.base64 import b64encode_str
 from .specs_manager import AAZSpecsManager
 from .workspace_cfg_editor import WorkspaceCfgEditor, build_endpoint_selector_for_client_config
 from .workspace_client_cfg_editor import WorkspaceClientCfgEditor
@@ -88,6 +89,7 @@ class WorkspaceManager:
         self._aaz_specs = aaz_manager
         self._swagger_specs = swagger_manager
         self._swagger_command_generator = None
+        self._typespec_command_generator = None
 
     @property
     def is_in_memory(self):
@@ -108,8 +110,14 @@ class WorkspaceManager:
     @property
     def swagger_command_generator(self):
         if not self._swagger_command_generator:
-            self._swagger_command_generator = CommandGenerator()
+            self._swagger_command_generator = SwaggerCommandGenerator()
         return self._swagger_command_generator
+
+    @property
+    def typespec_command_generator(self):
+        if not self._typespec_command_generator:
+            self._typespec_command_generator = TypespecCommandGenerator()
+        return self._typespec_command_generator
 
     def load(self):
         assert not self.is_in_memory
@@ -560,21 +568,52 @@ class WorkspaceManager:
         # load swagger resources
         self.swagger_command_generator.load_resources(swagger_resources)
 
+        self._add_new_resources(self.typespec_command_generator, swagger_resources, resource_options)
+
+    def add_new_resources_by_typespec(self, mod_names, version, resources):
+        root_node = self.find_command_tree_node()
+        assert root_node
+
+        cmd_resources = []
+        resource_options = []
+        used_resource_ids = set()
+        for r in resources:
+            if r['id'] in used_resource_ids:
+                continue
+            if self.check_resource_exist(r['id']):
+                raise exceptions.InvalidAPIUsage(
+                    f"Resource already added in Workspace: {r['id']}")
+            used_resource_ids.update(r['id'])
+            cmd_resources.append(CMDResource({
+                "id": r['id'],
+                "version": version,
+                "swagger": f"{self.ws.resource_provider}/Paths/{b64encode_str(r['path'])}/V/{b64encode_str(version)}" 
+            }))
+            resource_options.append(r.get("options", {}))
+        
+        # load typespec resources
+        self.typespec_command_generator.load_resources(resources)
+
+        self._add_new_resources(self.typespec_command_generator, cmd_resources, resource_options)
+    
+    def _add_new_resources(self, command_generator, resources, resource_options):
         # generate cfg editors by resource
         cfg_editors = []
         aaz_ref = {}
-        for resource, options in zip(swagger_resources, resource_options):
+        for resource, options in zip(resources, resource_options):
             try:
-                command_group = self.swagger_command_generator.create_draft_command_group(
+                command_group = command_generator.create_draft_command_group(
                     resource, instance_var=CMDBuildInVariants.Instance, **options)
             except InvalidSwaggerValueError as err:
                 raise exceptions.InvalidAPIUsage(
                     message=str(err)
                 ) from err
             assert not command_group.command_groups, "The logic to support sub command groups is not supported"
+            if not isinstance(resource, CMDResource):  # Typespec use CMDResource directly
+                resource = resource.to_cmd()
             cfg_editor = WorkspaceCfgEditor.new_cfg(
                 plane=self.ws.plane,
-                resources=[resource.to_cmd()],
+                resources=[resource],
                 command_groups=[command_group]
             )
 
@@ -589,9 +628,8 @@ class WorkspaceManager:
                 cfg_editor.inherit_modification(aaz_cfg_reader)
                 for cmd_names, _ in cfg_editor.iter_commands():
                     aaz_ref[' '.join(cmd_names)] = aaz_version
-
             cfg_editors.append(cfg_editor)
-
+        
         # add cfg_editors
         self._add_cfg_editors(cfg_editors, aaz_ref=aaz_ref)
 
@@ -709,6 +747,10 @@ class WorkspaceManager:
 
         # add cfg_editors
         self._add_cfg_editors(new_cfg_editors)
+
+    # TODO:
+    def reload_typespec_resources(self, resources):
+        pass
 
     def add_new_command_by_aaz(self, *cmd_names, version):
         # TODO: add support to load from aaz
@@ -1048,7 +1090,7 @@ class WorkspaceManager:
         return results
 
     # client config
-
+    # TODO: support typespec
     def create_cfg_editor(self, auth, templates=None, cloud_medadata=None, arm_resource=None):
         ref_cfg = self.load_client_cfg_editor()
         if templates:
