@@ -2,6 +2,8 @@ import click
 import logging
 from flask import Blueprint
 import sys
+import subprocess
+import os
 
 from utils.config import Config
 
@@ -256,6 +258,12 @@ def _build_profile(profile_name, commands_map):
     help="The local path of azure-cli repo. Only required when generate code to azure-cli repo."
 )
 @click.option(
+    "--powershell-path", '-p',
+    type=click.Path(file_okay=False, dir_okay=True, writable=True, readable=True, resolve_path=True),
+    required=True,
+    help="The local path of azure-powershell repo."
+)
+@click.option(
     "--cli-extension-path", '-e',
     type=click.Path(file_okay=False, dir_okay=True, writable=True, readable=True, resolve_path=True),
     callback=Config.validate_and_setup_cli_extension_path,
@@ -283,5 +291,49 @@ def _build_profile(profile_name, commands_map):
     expose_value=False,
     help="The resource provider name."
 )
-def generate_powershell(extension_or_module_name, cli_path=None, cli_extension_path=None):
+def generate_powershell(extension_or_module_name, cli_path=None, cli_extension_path=None, powershell_path=None):
+    # Module path in azure-powershell repo
+    modulePath = powershell_path + "/src/" + extension_or_module_name + "/" + extension_or_module_name + ".Autorest"
+    
+    # TODO by Kai, generate README.md for powershell from CLI, ex, for Oracle, README.md should be generated in src/Oracle/Oracle.Autorest/README.md in azure-powershell repo
+
+    # Generate and build PowerShell module from the README.md file generated above
+    print("Start to generate the PowerShell module from the README.md file in " + modulePath)
+    # Execute autorest to generate the PowerShell module
+    # result = subprocess.run(
+    #     ["pwsh", "-Command", 'autorest'],
+    #     timeout=45,
+    #     capture_output=True,
+    #     text=True,
+    #     cwd=modulePath
+    # )
+    original_cwd = os.getcwd()
+    os.chdir(modulePath)
+    exit_code = os.system("pwsh -Command autorest")
+
+    # Print the output of the generation
+    if (exit_code != 0):
+        print("Failed to generate the module")
+        os.chdir(original_cwd)
+        sys.exit(1)
+    else:
+        print("Code generation succeeded.")
+        # print(result.stdout)
+
+    os.chdir(original_cwd)
+    # Execute autorest to generate the PowerShell module
+    print("Start to build the generated PowerShell module")
+    result = subprocess.run(
+        ["pwsh", "-File", 'build-module.ps1'],
+        capture_output=True,
+        text=True,
+        cwd=modulePath
+    )
+
+    if (result.returncode != 0):
+        print("Failed to build the module, please see following output for details:")
+        print(result.stderr)
+        sys.exit(1)
+    else:
+        print("Module build succeeds, and you may run the generated module by executing the following command: `./run-module.ps1` in " + modulePath)
     pass
